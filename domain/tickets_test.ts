@@ -3,7 +3,6 @@ import {
   buildDeduplicationKey,
   buildReplyText,
   extractTicketIds,
-  replyRootTimestamp,
 } from "./tickets.ts";
 
 Deno.test("extractTicketIds normalizes and preserves unique first occurrence", () => {
@@ -42,11 +41,10 @@ Deno.test("buildReplyText emits one Slack link per line", () => {
   );
 });
 
-Deno.test("replyRootTimestamp uses ROSI message_ts for every message", () => {
-  assertEquals(replyRootTimestamp("100.200"), "100.200");
-});
-
-Deno.test("buildDeduplicationKey distinguishes replies in one thread", () => {
+Deno.test("buildDeduplicationKey distinguishes replies in one thread by sub-second message_ts", () => {
+  // Two replies arriving in the same wall-clock second but with distinct
+  // Slack message_ts fractional parts must produce distinct dedup keys.
+  // This is the property that prevents the whole-second event_timestamp collision.
   assertEquals(
     buildDeduplicationKey("C123", "1700000000.000001"),
     "C123:1700000000.000001",
@@ -54,5 +52,16 @@ Deno.test("buildDeduplicationKey distinguishes replies in one thread", () => {
   assertEquals(
     buildDeduplicationKey("C123", "1700000000.000002"),
     "C123:1700000000.000002",
+  );
+});
+
+Deno.test("buildDeduplicationKey distinguishes top-level messages in the same channel", () => {
+  assertEquals(
+    buildDeduplicationKey("C123", "1700000001.000001"),
+    "C123:1700000001.000001",
+  );
+  assertEquals(
+    buildDeduplicationKey("C456", "1700000001.000001"),
+    "C456:1700000001.000001",
   );
 });

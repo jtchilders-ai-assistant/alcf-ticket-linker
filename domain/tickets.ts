@@ -21,13 +21,22 @@ export function buildReplyText(ticketIds: readonly string[]): string {
   }).join("\n");
 }
 
-export function replyRootTimestamp(messageTs: string): string {
-  return messageTs;
-}
-
+/**
+ * Build the idempotency key for a source message.
+ *
+ * The key is channel_id + source_message_ts, where source_message_ts is
+ * the Slack message_ts of THIS specific message (fractional-second precision).
+ * Using message_ts instead of a whole-second event_timestamp prevents a
+ * collision when two messages arrive in the same channel within one second.
+ *
+ * Trigger mapping (two triggers, one function):
+ *   Top-level message: data.message_ts → source_message_ts
+ *   Thread reply:      data.thread_ts  → source_message_ts
+ *                      data.message_ts → reply_root_ts (for chat.postMessage)
+ */
 export function buildDeduplicationKey(
   channelId: string,
-  sourceEventTimestamp: string,
+  sourceMessageTs: string,
 ): string {
-  return `${channelId}:${sourceEventTimestamp}`;
+  return `${channelId}:${sourceMessageTs}`;
 }

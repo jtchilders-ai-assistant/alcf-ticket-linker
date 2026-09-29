@@ -4,7 +4,6 @@ import {
   buildDeduplicationKey,
   buildReplyText,
   extractTicketIds,
-  replyRootTimestamp,
 } from "../domain/tickets.ts";
 
 const RETENTION_SECONDS = 24 * 60 * 60;
@@ -18,16 +17,24 @@ export const LinkTicketsDefinition = DefineFunction({
     properties: {
       channel_id: { type: Schema.slack.types.channel_id },
       channel_type: { type: Schema.types.string },
-      message_ts: { type: Schema.slack.types.message_ts },
-      source_event_timestamp: { type: Schema.slack.types.timestamp },
+      // source_message_ts: the precise Slack message_ts of THIS message.
+      //   Top-level trigger maps data.message_ts → source_message_ts.
+      //   Thread-reply trigger maps data.thread_ts → source_message_ts
+      //   (thread_ts is the reply's own timestamp in ROSI semantics).
+      source_message_ts: { type: Schema.slack.types.message_ts },
+      // reply_root_ts: the thread root to target with chat.postMessage.
+      //   Both triggers map data.message_ts → reply_root_ts:
+      //     Top-level: message_ts is the message itself (acts as root).
+      //     Thread-reply: message_ts is the thread root in ROSI semantics.
+      reply_root_ts: { type: Schema.slack.types.message_ts },
       text: { type: Schema.types.string },
       user_id: { type: Schema.types.string },
     },
     required: [
       "channel_id",
       "channel_type",
-      "message_ts",
-      "source_event_timestamp",
+      "source_message_ts",
+      "reply_root_ts",
       "text",
       "user_id",
     ],
@@ -49,11 +56,13 @@ export default SlackFunction(
     const ticketIds = extractTicketIds(inputs.text);
     if (ticketIds.length === 0) return { outputs: {} };
 
-    // Deduplication key uses the event timestamp, which is unique per message
-    // even for thread replies that share a message_ts root.
+    // Deduplication key: channel_id + source_message_ts (sub-second precision).
+    // Using message_ts guarantees distinct keys for two messages in the same
+    // channel in the same wall-clock second — the whole-second event_timestamp
+    // could not provide this guarantee.
     const sourceKey = buildDeduplicationKey(
       inputs.channel_id,
-      String(inputs.source_event_timestamp),
+      inputs.source_message_ts,
     );
 
     // Best-effort sequential retry suppression via expiring datastore record.
@@ -76,9 +85,10 @@ export default SlackFunction(
     }
 
     // Post the ticket link list as a thread reply.
+    // reply_root_ts is the thread root for both top-level and threaded messages.
     const postResponse = await client.chat.postMessage({
       channel: inputs.channel_id,
-      thread_ts: replyRootTimestamp(inputs.message_ts),
+      thread_ts: inputs.reply_root_ts,
       text: buildReplyText(ticketIds),
       unfurl_links: false,
       unfurl_media: false,
