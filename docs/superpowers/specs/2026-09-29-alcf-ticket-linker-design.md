@@ -1,4 +1,4 @@
-# CELS Ticket Linker — Design Specification
+# ALCF Ticket Linker — Design Specification
 
 **Status:** Approved design; implementation not started  
 **Date:** 2026-09-29  
