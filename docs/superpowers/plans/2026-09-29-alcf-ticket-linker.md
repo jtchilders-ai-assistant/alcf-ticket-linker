@@ -1,54 +1,96 @@
 # ALCF Ticket Linker Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> superpowers:subagent-driven-development (recommended) or
+> superpowers:executing-plans to implement this plan task-by-task. Steps use
+> checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build and verify a private Slack-hosted app that finds unique `REQ-<digits>` identifiers in every new public/private channel message, including thread replies, and posts one link list in the corresponding thread.
+**Goal:** Build and verify a private Slack-hosted app that finds unique
+`REQ-<digits>` identifiers in every new public/private channel message,
+including thread replies, and posts one link list in the corresponding thread.
 
-**Architecture:** A `MessagePosted` event trigger invokes one workflow and one custom Slack function. Pure parsing/key/formatting helpers remain independent of Slack; the function adapter enforces origin checks, performs best-effort sequential retry suppression with an expiring Slack datastore record, posts through `chat.postMessage`, and records success.
+**Architecture:** A `MessagePosted` event trigger invokes one workflow and one
+custom Slack function. Pure parsing/key/formatting helpers remain independent of
+Slack; the function adapter enforces origin checks, performs best-effort
+sequential retry suppression with an expiring Slack datastore record, posts
+through `chat.postMessage`, and records success.
 
-**Tech Stack:** TypeScript, Deno 2.x, Deno Slack SDK 2.15.2, Deno Slack API 2.9.3, Slack CLI 4.x, GitHub Actions.
+**Tech Stack:** TypeScript, Deno 2.x, Deno Slack SDK 2.15.2, Deno Slack API
+2.9.3, Slack CLI 4.x, GitHub Actions.
 
 ---
 
 ## Ground rules and verified platform semantics
 
 - Work from an isolated branch/worktree; do not implement on `main`.
-- Follow RED → GREEN → REFACTOR for every production module: create its test first, run it and confirm the expected missing-module or missing-export failure, then create the implementation.
-- Use `TriggerContextData.Event.MessagePosted.message_ts` as the reply root. In the current ROSI type definition, it is the source timestamp for a top-level message and the parent/root timestamp for a threaded message.
-- Use `TriggerContextData.Event.MessagePosted.event_timestamp` in the deduplication key. Do not use `message_ts`, because all replies in one thread share that root value.
+- Follow RED → GREEN → REFACTOR for every production module: create its test
+  first, run it and confirm the expected missing-module or missing-export
+  failure, then create the implementation.
+- Use TWO `MessagePosted` event triggers sharing one workflow and one function.
+  The top-level trigger filters `thread_ts == null` and maps `data.message_ts`
+  to `source_message_ts` (dedup key) and `reply_root_ts` (chat.postMessage
+  target). The thread-reply trigger filters `thread_ts != null` and maps
+  `data.thread_ts` to `source_message_ts` and `data.message_ts` to
+  `reply_root_ts`. Two triggers avoid passing nullable `thread_ts` through
+  workflow input validation.
+- Deduplication key is `channel_id + source_message_ts`. `source_message_ts` is
+  the Slack `message_ts` of the specific message (sub-second fractional
+  precision), which guarantees distinct keys for two messages in the same
+  channel within the same wall-clock second. Do not use the whole-second
+  `event_timestamp` as a dedup key component.
 - Do not pass nullable `thread_ts` through workflow inputs.
-- Treat datastore suppression as best-effort for sequential retries, not exactly-once processing. `apps.datastore.put` replaces existing rows and has no conditional-create parameter.
-- Do not broaden scopes to direct-message history. If Slack rejects the public/private-only `all_resources` trigger unless DM scopes are added, stop and report that design conflict.
-- Never commit Slack credentials, `.env` files, generated `.slack/apps*.json`, or local CLI state.
+- Treat datastore suppression as best-effort for sequential retries, not
+  exactly-once processing. `apps.datastore.put` replaces existing rows and has
+  no conditional-create parameter.
+- Do not broaden scopes to direct-message history. If Slack rejects the
+  public/private-only `all_resources` trigger unless DM scopes are added, stop
+  and report that design conflict.
+- Never commit Slack credentials, `.env` files, generated `.slack/apps*.json`,
+  or local CLI state.
 
 ## Target file map
 
-- `deno.jsonc` — pinned imports, formatting/linting scope, and verification task.
+- `deno.jsonc` — pinned imports, formatting/linting scope, and verification
+  task.
 - `.slack/hooks.json` — Slack CLI manifest-generation hook.
 - `.slack/.gitignore` — excludes generated local Slack app state.
 - `.gitignore` — excludes editor/OS/build artifacts and secrets.
-- `manifest.ts` — app metadata, one workflow, one datastore, least-privilege scopes.
-- `domain/tickets.ts` — pure ticket extraction, normalization, formatting, reply-root, and dedup-key helpers.
+- `manifest.ts` — app metadata, one workflow, one datastore, least-privilege
+  scopes.
+- `domain/tickets.ts` — pure ticket extraction, normalization, formatting,
+  reply-root, and dedup-key helpers.
 - `domain/tickets_test.ts` — exhaustive pure behavior tests.
-- `datastores/processed_messages.ts` — TTL-enabled privacy-minimized datastore schema.
+- `datastores/processed_messages.ts` — TTL-enabled privacy-minimized datastore
+  schema.
 - `functions/link_tickets.ts` — custom-function definition and Slack adapter.
-- `functions/link_tickets_test.ts` — mocked Slack API tests for no-op, deduplication, posting, and failures.
+- `functions/link_tickets_test.ts` — mocked Slack API tests for no-op,
+  deduplication, posting, and failures.
 - `workflows/link_tickets.ts` — workflow inputs and one custom-function step.
-- `triggers/message_posted.ts` — all-resources event trigger with user and channel-type filters.
-- `tests/configuration_test.ts` — structural assertions over trigger, workflow, datastore, and manifest.
-- `.github/workflows/ci.yml` — Deno formatting, linting, tests, and type checking.
+- `triggers/message_posted_top_level.ts` — event trigger for top-level messages
+  (thread_ts == null); maps `data.message_ts` to both `source_message_ts` and
+  `reply_root_ts`.
+- `triggers/message_posted_thread_reply.ts` — event trigger for thread replies
+  (thread_ts != null); maps `data.thread_ts` to `source_message_ts` and
+  `data.message_ts` to `reply_root_ts`.
+- `tests/configuration_test.ts` — structural assertions over trigger, workflow,
+  datastore, and manifest.
+- `.github/workflows/ci.yml` — Deno formatting, linting, tests, and type
+  checking.
 - `README.md` — purpose, privacy model, local checks, and deployment overview.
-- `docs/runbook.md` — CELS authorization, validation, trigger creation, deployment, smoke test, rollback, and troubleshooting.
+- `docs/runbook.md` — CELS authorization, validation, trigger creation,
+  deployment, smoke test, rollback, and troubleshooting.
 
 ### Task 1: Establish the pinned Deno/Slack project shell
 
 **Files:**
+
 - Create: `deno.jsonc`
 - Create: `.slack/hooks.json`
 - Create: `.slack/.gitignore`
 - Create: `.gitignore`
 
-- [ ] **Step 1: Confirm local tool availability without changing shell startup files**
+- [ ] **Step 1: Confirm local tool availability without changing shell startup
+      files**
 
 Run:
 
@@ -59,11 +101,13 @@ deno --version 2>/dev/null || true
 slack version 2>/dev/null || true
 ```
 
-Expected on the current host: neither tool is installed. Do not edit `~/.zshrc`, `~/.zprofile`, or another login file.
+Expected on the current host: neither tool is installed. Do not edit `~/.zshrc`,
+`~/.zprofile`, or another login file.
 
 - [ ] **Step 2: Install user-local tools if absent**
 
-Install Deno and Slack CLI under the user's home directory, then expose them only to the current shell:
+Install Deno and Slack CLI under the user's home directory, then expose them
+only to the current shell:
 
 ```bash
 export DENO_INSTALL="$HOME/.local/deno"
@@ -78,7 +122,9 @@ deno --version
 slack version
 ```
 
-Expected: Deno reports `2.9.7`; Slack CLI reports a 4.x release. If Slack's installer proposes editing an rc file, decline and use the exported `PATH` above.
+Expected: Deno reports `2.9.7`; Slack CLI reports a 4.x release. If Slack's
+installer proposes editing an rc file, decline and use the exported `PATH`
+above.
 
 - [ ] **Step 3: Create project configuration**
 
@@ -164,11 +210,13 @@ git add deno.jsonc deno.lock .slack/hooks.json .slack/.gitignore .gitignore
 git commit -m "chore: initialize Slack Deno project"
 ```
 
-Expected: dependency resolution exits 0 and the commit contains configuration only.
+Expected: dependency resolution exits 0 and the commit contains configuration
+only.
 
 ### Task 2: Implement ticket parsing and response formatting with TDD
 
 **Files:**
+
 - Create first: `domain/tickets_test.ts`
 - Create after RED: `domain/tickets.ts`
 
@@ -182,7 +230,6 @@ import {
   buildDeduplicationKey,
   buildReplyText,
   extractTicketIds,
-  replyRootTimestamp,
 } from "./tickets.ts";
 
 Deno.test("extractTicketIds normalizes and preserves unique first occurrence", () => {
@@ -221,11 +268,7 @@ Deno.test("buildReplyText emits one Slack link per line", () => {
   );
 });
 
-Deno.test("replyRootTimestamp uses ROSI message_ts for every message", () => {
-  assertEquals(replyRootTimestamp("100.200"), "100.200");
-});
-
-Deno.test("buildDeduplicationKey distinguishes replies in one thread", () => {
+Deno.test("buildDeduplicationKey distinguishes replies in one thread by sub-second message_ts", () => {
   assertEquals(
     buildDeduplicationKey("C123", "1700000000.000001"),
     "C123:1700000000.000001",
@@ -275,15 +318,11 @@ export function buildReplyText(ticketIds: readonly string[]): string {
   }).join("\n");
 }
 
-export function replyRootTimestamp(messageTs: string): string {
-  return messageTs;
-}
-
 export function buildDeduplicationKey(
   channelId: string,
-  sourceEventTimestamp: string,
+  sourceMessageTs: string,
 ): string {
-  return `${channelId}:${sourceEventTimestamp}`;
+  return `${channelId}:${sourceMessageTs}`;
 }
 ```
 
@@ -310,6 +349,7 @@ git commit -m "feat: parse and format ALCF ticket links"
 ### Task 3: Define the expiring processed-message datastore
 
 **Files:**
+
 - Create first: `tests/datastore_test.ts`
 - Create after RED: `datastores/processed_messages.ts`
 
@@ -376,17 +416,20 @@ git add datastores/processed_messages.ts tests/datastore_test.ts
 git commit -m "feat: add processed message datastore"
 ```
 
-Expected: tests/type check pass and the schema includes no message text, user ID, or ticket ID field.
+Expected: tests/type check pass and the schema includes no message text, user
+ID, or ticket ID field.
 
 ### Task 4: Implement the Slack function adapter with TDD
 
 **Files:**
+
 - Create first: `functions/link_tickets_test.ts`
 - Create after RED: `functions/link_tickets.ts`
 
 - [ ] **Step 1: Write a reusable Slack API fetch stub in the test file**
 
-Create `functions/link_tickets_test.ts` with a request recorder that returns queued JSON by method endpoint:
+Create `functions/link_tickets_test.ts` with a request recorder that returns
+queued JSON by method endpoint:
 
 ```ts
 import { assertEquals, assertStringIncludes } from "@std/assert";
@@ -396,7 +439,7 @@ import { SlackFunctionTester } from "deno-slack-sdk/mod.ts";
 
 const { createContext } = SlackFunctionTester("link_tickets");
 
-type RecordedRequest = { method: string; body: FormData };
+type RecordedRequest = { method: string; params: URLSearchParams };
 
 function slackFetchStub(
   responses: Record<string, Array<Record<string, unknown>>>,
@@ -408,8 +451,9 @@ function slackFetchStub(
     async (url: string | URL | Request, options?: RequestInit) => {
       const request = url instanceof Request ? url : new Request(url, options);
       const method = request.url.split("/").at(-1)!;
-      const body = await request.formData();
-      recorded.push({ method, body });
+      const bodyText = await request.clone().text();
+      const params = new URLSearchParams(bodyText);
+      recorded.push({ method, params });
       const response = responses[method]?.shift();
       if (!response) throw new Error(`Unexpected Slack method: ${method}`);
       return new Response(JSON.stringify(response), { status: 200 });
@@ -421,8 +465,8 @@ function inputs(overrides: Record<string, string> = {}) {
   return {
     channel_id: "C123",
     channel_type: "public",
-    message_ts: "1700000000.000001",
-    source_event_timestamp: "1700000001.000001",
+    source_message_ts: "1700000000.000001",
+    reply_root_ts: "1700000000.000001",
     text: "See REQ-13981",
     user_id: "U123",
     ...overrides,
@@ -446,11 +490,13 @@ Deno.test("no ticket is a successful no-op", async () => {
 });
 
 Deno.test("missing user or unsupported channel is a successful no-op", async () => {
-  for (const invalid of [
-    inputs({ user_id: "" }),
-    inputs({ channel_type: "im" }),
-    inputs({ channel_type: "mpdm" }),
-  ]) {
+  for (
+    const invalid of [
+      inputs({ user_id: "" }),
+      inputs({ channel_type: "im" }),
+      inputs({ channel_type: "mpdm" }),
+    ]
+  ) {
     const recorded: RecordedRequest[] = [];
     using _fetch = slackFetchStub({}, recorded);
     const result = await LinkTickets(createContext({ inputs: invalid }));
@@ -472,7 +518,10 @@ Append tests that queue these API responses:
 }
 ```
 
-Assert the method order is `apps.datastore.get`, `chat.postMessage`, `apps.datastore.put`; decode `text`, `channel`, and `thread_ts` from the recorded form body; verify one reply contains all unique links; and verify the datastore key is `C123:1700000001.000001`.
+Assert the method order is `apps.datastore.get`, `chat.postMessage`,
+`apps.datastore.put`; decode `text`, `channel`, and `thread_ts` from the
+recorded form body; verify one reply contains all unique links; and verify the
+datastore key is `C123:1700000000.000001`.
 
 Add a second test with:
 
@@ -481,7 +530,7 @@ Add a second test with:
   "apps.datastore.get": [{
     ok: true,
     item: {
-      source_key: "C123:1700000001.000001",
+      source_key: "C123:1700000000.000001",
       expires_at: 4102444800,
       reply_ts: "1700000002.1",
     },
@@ -496,11 +545,15 @@ Assert no post or write occurs.
 Append tests for:
 
 - expired record (`expires_at: 1`) → posts and rewrites;
-- datastore get `{ok:false,error:"datastore_error"}` → returns error and does not post;
-- `chat.postMessage` `{ok:false,error:"ratelimited"}` → returns error and does not write;
-- successful post followed by datastore put failure → returns an error containing `duplicate-risk`.
+- datastore get `{ok:false,error:"datastore_error"}` → returns error and does
+  not post;
+- `chat.postMessage` `{ok:false,error:"ratelimited"}` → returns error and does
+  not write;
+- successful post followed by datastore put failure → returns an error
+  containing `duplicate-risk`.
 
-Use `assertStringIncludes(result.error!, "...")` for stable error fragments; do not assert volatile full messages.
+Use `assertStringIncludes(result.error!, "...")` for stable error fragments; do
+not assert volatile full messages.
 
 - [ ] **Step 5: Run and verify RED**
 
@@ -523,7 +576,6 @@ import {
   buildDeduplicationKey,
   buildReplyText,
   extractTicketIds,
-  replyRootTimestamp,
 } from "../domain/tickets.ts";
 
 const RETENTION_SECONDS = 24 * 60 * 60;
@@ -537,16 +589,21 @@ export const LinkTicketsDefinition = DefineFunction({
     properties: {
       channel_id: { type: Schema.slack.types.channel_id },
       channel_type: { type: Schema.types.string },
-      message_ts: { type: Schema.slack.types.message_ts },
-      source_event_timestamp: { type: Schema.slack.types.timestamp },
+      // source_message_ts: the precise Slack message_ts of THIS specific message.
+      //   Top-level trigger maps data.message_ts -> source_message_ts.
+      //   Thread-reply trigger maps data.thread_ts -> source_message_ts.
+      source_message_ts: { type: Schema.slack.types.message_ts },
+      // reply_root_ts: the thread root for chat.postMessage.
+      //   Both triggers map data.message_ts -> reply_root_ts.
+      reply_root_ts: { type: Schema.slack.types.message_ts },
       text: { type: Schema.types.string },
       user_id: { type: Schema.types.string },
     },
     required: [
       "channel_id",
       "channel_type",
-      "message_ts",
-      "source_event_timestamp",
+      "source_message_ts",
+      "reply_root_ts",
       "text",
       "user_id",
     ],
@@ -557,16 +614,20 @@ export const LinkTicketsDefinition = DefineFunction({
 export default SlackFunction(
   LinkTicketsDefinition,
   async ({ inputs, client }) => {
-    if (!inputs.user_id || !["public", "private"].includes(inputs.channel_type)) {
+    if (
+      !inputs.user_id || !["public", "private"].includes(inputs.channel_type)
+    ) {
       return { outputs: {} };
     }
 
     const ticketIds = extractTicketIds(inputs.text);
     if (ticketIds.length === 0) return { outputs: {} };
 
+    // Dedup key uses source_message_ts (sub-second precision) to prevent
+    // collision for two messages in the same channel within one second.
     const sourceKey = buildDeduplicationKey(
       inputs.channel_id,
-      String(inputs.source_event_timestamp),
+      inputs.source_message_ts,
     );
     const now = Math.floor(Date.now() / 1000);
     const getResponse = await client.apps.datastore.get<
@@ -581,7 +642,7 @@ export default SlackFunction(
 
     const postResponse = await client.chat.postMessage({
       channel: inputs.channel_id,
-      thread_ts: replyRootTimestamp(inputs.message_ts),
+      thread_ts: inputs.reply_root_ts,
       text: buildReplyText(ticketIds),
       unfurl_links: false,
       unfurl_media: false,
@@ -602,14 +663,18 @@ export default SlackFunction(
       },
     });
     if (!putResponse.ok) {
-      return { error: `duplicate-risk: datastore-write-failed: ${putResponse.error}` };
+      return {
+        error: `duplicate-risk: datastore-write-failed: ${putResponse.error}`,
+      };
     }
     return { outputs: {} };
   },
 );
 ```
 
-Run the type check immediately after creating the handler. Slack's timestamp schema is expected to accept Unix epoch seconds as a number. If the pinned SDK rejects that representation, inspect its exported type and change `now`, `expires_at`, and the corresponding test fixtures consistently to that exact type; do not cast through `unknown` or `any`.
+There is no `source_event_timestamp` input and no `replyRootTimestamp` helper.
+The dedup key comes directly from `inputs.source_message_ts`. The outgoing
+`thread_ts` comes directly from `inputs.reply_root_ts`.
 
 - [ ] **Step 7: Run GREEN, then refactor only while green**
 
@@ -622,7 +687,9 @@ deno lint functions domain datastores
 deno check functions/link_tickets.ts functions/link_tickets_test.ts
 ```
 
-Expected: all tests and checks pass. If the Slack client serializes JSON rather than form data in the pinned SDK, update only the recorder helper to parse the actual request representation observed during RED/GREEN runs.
+Expected: all tests and checks pass. If the Slack client serializes JSON rather
+than form data in the pinned SDK, update only the recorder helper to parse the
+actual request representation observed during RED/GREEN runs.
 
 - [ ] **Step 8: Commit**
 
@@ -634,9 +701,11 @@ git commit -m "feat: link tickets from Slack messages"
 ### Task 5: Wire workflow, trigger, and manifest with structural tests
 
 **Files:**
+
 - Create first: `tests/configuration_test.ts`
 - Create after RED: `workflows/link_tickets.ts`
-- Create after RED: `triggers/message_posted.ts`
+- Create after RED: `triggers/message_posted_top_level.ts`
+- Create after RED: `triggers/message_posted_thread_reply.ts`
 - Create after RED: `manifest.ts`
 
 - [ ] **Step 1: Write failing configuration tests**
@@ -646,7 +715,8 @@ Create `tests/configuration_test.ts`:
 ```ts
 import { assertEquals } from "@std/assert";
 import manifest from "../manifest.ts";
-import trigger from "../triggers/message_posted.ts";
+import topLevelTrigger from "../triggers/message_posted_top_level.ts";
+import threadReplyTrigger from "../triggers/message_posted_thread_reply.ts";
 import workflow from "../workflows/link_tickets.ts";
 
 Deno.test("manifest requests only reviewed scopes", () => {
@@ -662,22 +732,47 @@ Deno.test("manifest requests only reviewed scopes", () => {
   );
 });
 
-Deno.test("trigger covers joined resources and filters users and channel types", () => {
-  assertEquals(trigger.event.all_resources, true);
-  assertEquals(trigger.event.event_type, "slack#/events/message_posted");
-  const serialized = JSON.stringify(trigger.event.filter);
+Deno.test("top-level trigger covers joined resources, filters users and channel types, and requires thread_ts null", () => {
+  assertEquals(topLevelTrigger.event.all_resources, true);
+  assertEquals(
+    topLevelTrigger.event.event_type,
+    "slack#/events/message_posted",
+  );
+  const serialized = JSON.stringify(topLevelTrigger.event.filter);
   assertEquals(serialized.includes("data.user_id"), true);
   assertEquals(serialized.includes("data.channel_type"), true);
-  assertEquals(serialized.includes("data.thread_ts"), false);
+  // Top-level trigger must filter on thread_ts (== null) to exclude replies
+  assertEquals(serialized.includes("data.thread_ts"), true);
 });
 
-Deno.test("workflow has one custom function step", () => {
+Deno.test("thread-reply trigger covers joined resources, filters users and channel types, and requires thread_ts non-null", () => {
+  assertEquals(threadReplyTrigger.event.all_resources, true);
+  assertEquals(
+    threadReplyTrigger.event.event_type,
+    "slack#/events/message_posted",
+  );
+  const serialized = JSON.stringify(threadReplyTrigger.event.filter);
+  assertEquals(serialized.includes("data.user_id"), true);
+  assertEquals(serialized.includes("data.channel_type"), true);
+  assertEquals(serialized.includes("data.thread_ts"), true);
+});
+
+Deno.test("workflow has one custom function step with six required inputs", () => {
   assertEquals(workflow.definition.callback_id, "link_tickets_workflow");
   assertEquals(workflow.definition.input_parameters.required.length, 6);
+  // Confirm the corrected input names are present
+  const required: string[] = workflow.definition.input_parameters.required;
+  assertEquals(required.includes("source_message_ts"), true);
+  assertEquals(required.includes("reply_root_ts"), true);
+  // Confirm the old buggy input is gone
+  assertEquals(required.includes("source_event_timestamp"), false);
 });
 ```
 
-If this first RED run shows that the public SDK objects expose a different path than `definition`, inspect the actual exported objects and update the test's property path while preserving the assertions' semantics; do not weaken or delete an assertion merely to make it compile.
+If this first RED run shows that the public SDK objects expose a different path
+than `definition`, inspect the actual exported objects and update the test's
+property path while preserving the assertions' semantics; do not weaken or
+delete an assertion merely to make it compile.
 
 - [ ] **Step 2: Run and verify RED**
 
@@ -694,19 +789,22 @@ Expected: failure because workflow, trigger, and manifest modules do not exist.
 Create `workflows/link_tickets.ts` defining these six required inputs:
 
 ```ts
-channel_id: Schema.slack.types.channel_id
-channel_type: Schema.types.string
-message_ts: Schema.slack.types.message_ts
-source_event_timestamp: Schema.slack.types.timestamp
-text: Schema.types.string
-user_id: Schema.types.string
+channel_id: Schema.slack.types.channel_id;
+channel_type: Schema.types.string;
+source_message_ts: Schema.slack.types.message_ts;
+reply_root_ts: Schema.slack.types.message_ts;
+text: Schema.types.string;
+user_id: Schema.types.string;
 ```
 
-Set `callback_id` to `link_tickets_workflow`; add exactly one step using `LinkTicketsDefinition`; map every workflow input directly to the matching function input; export the workflow as default.
+Set `callback_id` to `link_tickets_workflow`; add exactly one step using
+`LinkTicketsDefinition`; map every workflow input directly to the matching
+function input; export the workflow as default.
 
-- [ ] **Step 4: Implement the event trigger**
+- [ ] **Step 4: Implement the two event triggers**
 
-Create `triggers/message_posted.ts` using:
+Create `triggers/message_posted_top_level.ts` for top-level messages
+(`thread_ts == null`):
 
 ```ts
 event_type: TriggerEventTypes.MessagePosted,
@@ -719,6 +817,9 @@ filter: {
       {
         operator: "NOT",
         inputs: [{ statement: "{{data.user_id}} == null" }],
+      },
+      {
+        statement: "{{data.thread_ts}} == null",
       },
       {
         operator: "OR",
@@ -737,13 +838,56 @@ Map inputs with `TriggerContextData.Event.MessagePosted`:
 ```ts
 channel_id
 channel_type
-message_ts
+message_ts -> source_message_ts   // the message's own ts, also the thread root
+message_ts -> reply_root_ts       // same: top-level message is its own root
 text
 user_id
-event_timestamp -> source_event_timestamp
 ```
 
-Do not reference `thread_ts`.
+Create `triggers/message_posted_thread_reply.ts` for thread replies
+(`thread_ts != null`):
+
+```ts
+event_type: TriggerEventTypes.MessagePosted,
+all_resources: true,
+filter: {
+  version: 1,
+  root: {
+    operator: "AND",
+    inputs: [
+      {
+        operator: "NOT",
+        inputs: [{ statement: "{{data.user_id}} == null" }],
+      },
+      {
+        operator: "NOT",
+        inputs: [{ statement: "{{data.thread_ts}} == null" }],
+      },
+      {
+        operator: "OR",
+        inputs: [
+          { statement: "{{data.channel_type}} == public" },
+          { statement: "{{data.channel_type}} == private" },
+        ],
+      },
+    ],
+  },
+},
+```
+
+Map inputs with `TriggerContextData.Event.MessagePosted`:
+
+```ts
+channel_id
+channel_type
+thread_ts -> source_message_ts   // thread_ts is this reply's own timestamp in ROSI
+message_ts -> reply_root_ts      // message_ts is the thread root timestamp in ROSI
+text
+user_id
+```
+
+Neither trigger passes `event_timestamp` to the function. The workflow and
+function use only `source_message_ts` and `reply_root_ts`.
 
 - [ ] **Step 5: Implement the manifest**
 
@@ -770,7 +914,8 @@ export default Manifest({
 });
 ```
 
-Do not add `chat:write.public`: the app should post only where it has been added.
+Do not add `chat:write.public`: the app should post only where it has been
+added.
 
 - [ ] **Step 6: Run GREEN and validate generated configuration**
 
@@ -778,27 +923,31 @@ Run:
 
 ```bash
 deno test tests/configuration_test.ts
-deno check manifest.ts workflows/link_tickets.ts triggers/message_posted.ts
+deno check manifest.ts workflows/link_tickets.ts triggers/message_posted_top_level.ts triggers/message_posted_thread_reply.ts
 slack manifest validate
 ```
 
-Expected: Deno tests/check pass. `slack manifest validate` passes without DM scopes. If it requests `im:history` or `mpim:history`, stop and report the scope conflict rather than adding them.
+Expected: Deno tests/check pass. `slack manifest validate` passes without DM
+scopes. If it requests `im:history` or `mpim:history`, stop and report the scope
+conflict rather than adding them.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add manifest.ts workflows/link_tickets.ts triggers/message_posted.ts tests/configuration_test.ts
+git add manifest.ts workflows/link_tickets.ts triggers/message_posted_top_level.ts triggers/message_posted_thread_reply.ts tests/configuration_test.ts
 git commit -m "feat: wire Slack workflow and event trigger"
 ```
 
 ### Task 6: Add CI and operator documentation
 
 **Files:**
+
 - Create: `.github/workflows/ci.yml`
 - Create: `README.md`
 - Create: `docs/runbook.md`
 
-Configuration and prose files do not need unit-test-first treatment, but their commands must be executed before commit.
+Configuration and prose files do not need unit-test-first treatment, but their
+commands must be executed before commit.
 
 - [ ] **Step 1: Create GitHub Actions CI**
 
@@ -853,15 +1002,22 @@ slack login
 slack auth list
 slack manifest validate
 slack run
-slack trigger create --trigger-def triggers/message_posted.ts
+slack trigger create --trigger-def triggers/message_posted_top_level.ts
+slack trigger create --trigger-def triggers/message_posted_thread_reply.ts
 slack deploy
-slack trigger create --trigger-def triggers/message_posted.ts
+slack trigger create --trigger-def triggers/message_posted_top_level.ts
+slack trigger create --trigger-def triggers/message_posted_thread_reply.ts
 slack activity --tail
 ```
 
-Explain that local and deployed apps have distinct IDs/triggers, so the trigger must be created for the selected deployed environment. Require the operator to record the deployed app ID and trigger ID locally in an ignored file, never in Git.
+Explain that local and deployed apps have distinct IDs/triggers, so the trigger
+must be created for the selected deployed environment. Require the operator to
+record the deployed app ID and trigger ID locally in an ignored file, never in
+Git.
 
-Include the five smoke-test cases from the specification and a results table with fields: UTC time, app ID suffix, trigger ID suffix, channel ID suffix, case, observed result, pass/fail. Do not record message text or ticket IDs.
+Include the five smoke-test cases from the specification and a results table
+with fields: UTC time, app ID suffix, trigger ID suffix, channel ID suffix,
+case, observed result, pass/fail. Do not record message text or ticket IDs.
 
 Include rollback:
 
@@ -870,7 +1026,9 @@ slack trigger delete --trigger-id "$TRIGGER_ID"
 slack uninstall --app "$APP_ID"
 ```
 
-Before finalizing the runbook, run `slack trigger delete --help`, `slack uninstall --help`, and the help command for every other lifecycle command shown; correct the examples to match the installed Slack CLI 4.x output.
+Before finalizing the runbook, run `slack trigger delete --help`,
+`slack uninstall --help`, and the help command for every other lifecycle command
+shown; correct the examples to match the installed Slack CLI 4.x output.
 
 - [ ] **Step 4: Run documentation/configuration checks**
 
@@ -896,7 +1054,9 @@ git commit -m "docs: add CI and deployment runbook"
 ### Task 7: Full local verification and independent review
 
 **Files:**
-- Modify only if verification or review finds a defect; every code fix requires a failing regression test first.
+
+- Modify only if verification or review finds a defect; every code fix requires
+  a failing regression test first.
 
 - [ ] **Step 1: Run the complete local gate from a clean process**
 
@@ -909,7 +1069,8 @@ git diff --check
 git status --short
 ```
 
-Expected: all checks pass; status contains only intentionally uncommitted changes, preferably none.
+Expected: all checks pass; status contains only intentionally uncommitted
+changes, preferably none.
 
 - [ ] **Step 2: Audit requirements mechanically**
 
@@ -918,7 +1079,7 @@ Verify each item explicitly:
 ```bash
 rg 'im:|mpim:|chat:write.public' manifest.ts triggers workflows functions || true
 rg 'support.alcf.anl.gov/helpdesk/tickets' domain functions
-rg 'all_resources' triggers/message_posted.ts
+rg 'all_resources' triggers/message_posted_top_level.ts triggers/message_posted_thread_reply.ts
 rg 'thread_ts' triggers workflows functions domain
 rg 'message text|user identity|ticket IDs' docs/superpowers/specs/2026-09-29-alcf-ticket-linker-design.md README.md
 ```
@@ -928,16 +1089,20 @@ Expected:
 - no forbidden DM or public-posting scopes;
 - exactly one support URL constant in production code;
 - `all_resources: true` present;
-- `thread_ts` appears only as the outgoing `chat.postMessage` argument, not as trigger/workflow input;
+- `thread_ts` appears only as the outgoing `chat.postMessage` argument, not as
+  trigger/workflow input;
 - privacy documentation remains present.
 
 - [ ] **Step 3: Request independent code review**
 
-Ask the reviewer to compare the implementation to every FR-1 through FR-9 requirement, inspect real SDK types, and classify findings as Critical, Important, or Minor. Critical/Important findings block merge.
+Ask the reviewer to compare the implementation to every FR-1 through FR-9
+requirement, inspect real SDK types, and classify findings as Critical,
+Important, or Minor. Critical/Important findings block merge.
 
 - [ ] **Step 4: Resolve findings with TDD and rerun the full gate**
 
-For each code defect, write a failing regression test, observe RED, implement the minimal fix, then rerun:
+For each code defect, write a failing regression test, observe RED, implement
+the minimal fix, then rerun:
 
 ```bash
 deno task check
@@ -959,6 +1124,7 @@ Skip the commit only when there are no changes.
 ### Task 8: Ship the reviewed implementation branch
 
 **Files:**
+
 - No source changes expected.
 
 - [ ] **Step 1: Push the feature branch**
@@ -986,7 +1152,8 @@ gh pr view --json author,baseRefName,headRefName,files,url
 gh pr checks --watch
 ```
 
-Expected: author `jtchilders-ai-assistant`, base `main`, intended feature head, only planned files, all checks pass.
+Expected: author `jtchilders-ai-assistant`, base `main`, intended feature head,
+only planned files, all checks pass.
 
 - [ ] **Step 4: Merge only after independent approval and green CI**
 
@@ -1002,14 +1169,17 @@ test "$local_sha" = "$origin_sha"
 test "$local_sha" = "$remote_sha"
 ```
 
-Expected: all three SHAs match. Remove the feature worktree and local feature branch after merge.
+Expected: all three SHAs match. Remove the feature worktree and local feature
+branch after merge.
 
 ### Task 9: Deploy to CELS and perform live acceptance testing
 
 **Files:**
+
 - Modify: `docs/runbook.md` only to record privacy-safe smoke-test outcomes.
 
-This task requires Taylor or a CELS administrator for workspace authorization and approval. Do not claim deployment completion from local tests.
+This task requires Taylor or a CELS administrator for workspace authorization
+and approval. Do not claim deployment completion from local tests.
 
 - [ ] **Step 1: Authenticate and confirm the exact target**
 
@@ -1018,7 +1188,8 @@ slack login
 slack auth list
 ```
 
-Expected: an authorized entry for `cels-anl.slack.com`. If absent, stop for Taylor's browser-based Slack authorization.
+Expected: an authorized entry for `cels-anl.slack.com`. If absent, stop for
+Taylor's browser-based Slack authorization.
 
 - [ ] **Step 2: Validate and deploy**
 
@@ -1027,20 +1198,25 @@ slack manifest validate
 slack deploy
 ```
 
-Expected: validation succeeds and Slack returns a deployed app identifier. Read back the deployed manifest and confirm only the reviewed scopes.
+Expected: validation succeeds and Slack returns a deployed app identifier. Read
+back the deployed manifest and confirm only the reviewed scopes.
 
 - [ ] **Step 3: Create the deployed event trigger**
 
 ```bash
-slack trigger create --trigger-def triggers/message_posted.ts
+slack trigger create --trigger-def triggers/message_posted_top_level.ts
+slack trigger create --trigger-def triggers/message_posted_thread_reply.ts
 slack trigger list
 ```
 
-Expected: one deployed `message_posted` trigger with `all_resources: true`. Save its ID to ignored local operator notes.
+Expected: one deployed `message_posted` trigger with `all_resources: true`. Save
+its ID to ignored local operator notes.
 
-- [ ] **Step 4: Have an authorized CELS member add the app to one controlled channel**
+- [ ] **Step 4: Have an authorized CELS member add the app to one controlled
+      channel**
 
-Do not add it broadly until smoke testing succeeds. Confirm app membership before sending tests.
+Do not add it broadly until smoke testing succeeds. Confirm app membership
+before sending tests.
 
 - [ ] **Step 5: Execute and record all smoke tests**
 
@@ -1050,9 +1226,11 @@ Test:
 2. two tickets plus a duplicate in an existing thread reply;
 3. bot response does not recurse;
 4. malformed/no-ticket message produces no response;
-5. sequential duplicate delivery does not produce a second response where Slack tooling permits replay.
+5. sequential duplicate delivery does not produce a second response where Slack
+   tooling permits replay.
 
-Observe the actual thread placement and `slack activity` output. Record only suffixes and pass/fail in `docs/runbook.md`.
+Observe the actual thread placement and `slack activity` output. Record only
+suffixes and pass/fail in `docs/runbook.md`.
 
 - [ ] **Step 6: Commit smoke-test evidence and verify deployed state**
 
@@ -1064,4 +1242,6 @@ slack trigger list
 slack activity --limit 20
 ```
 
-Read back the exact trigger/app target before reporting production success. If any smoke test fails, disable/delete the trigger first, then diagnose through a failing regression test.
+Read back the exact trigger/app target before reporting production success. If
+any smoke test fails, disable/delete the trigger first, then diagnose through a
+failing regression test.
