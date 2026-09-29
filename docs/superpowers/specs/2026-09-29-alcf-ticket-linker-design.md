@@ -59,7 +59,7 @@ The app processes:
 - new top-level channel messages; and
 - new replies posted in existing threads.
 
-It does not process historical messages when newly installed or newly added to a channel. Slack's current `MessagePosted` trigger context explicitly provides a nullable `thread_ts` for threaded messages, which is evidence that this event covers thread replies.[10] The CELS smoke test remains the final verification of actual workspace behavior.
+It does not process historical messages when newly installed or newly added to a channel. Slack's current `MessagePosted` trigger context explicitly supports threaded events: for a threaded message, `message_ts` is the parent/root timestamp and `thread_ts` is the timestamp of the specific reply; for a top-level message, `thread_ts` is absent.[10] The CELS smoke test remains the final verification of actual workspace behavior.
 
 ### FR-3: Ticket recognition
 
@@ -106,12 +106,7 @@ Slack angle-bracket link syntax is intentional: it produces a clickable URL with
 
 ### FR-7: Thread placement
 
-Slack does not nest threads. The reply target is:
-
-- `source_message.ts` for a top-level message;
-- `source_message.thread_ts` for a message already inside a thread.
-
-Thus a response to an existing thread reply appears in that same thread, under the thread root.
+Slack does not nest threads. ROSI's `MessagePosted.message_ts` is the correct reply target in both cases: it is the source timestamp for a top-level message and the parent/root timestamp for a threaded reply.[10] Thus a response to an existing thread reply appears in that same thread, under the thread root.
 
 ### FR-8: Loop prevention
 
@@ -122,10 +117,10 @@ The trigger requires `data.user_id != null`, following Slack's published Daily T
 Slack event delivery and workflow execution may be retried. The app uses a Slack-hosted datastore keyed by a deterministic source-message identity:
 
 ```text
-<team_id>:<channel_id>:<message_ts>
+<channel_id>:<source_event_timestamp>
 ```
 
-The record stores only:
+`source_event_timestamp` is the trigger's event timestamp, not the thread-root timestamp; this keeps separate replies in one thread from collapsing onto the same deduplication key. The record stores only:
 
 - the key;
 - creation time;
@@ -153,7 +148,7 @@ No component calls Freshworks. The only outbound application action is Slack's o
 
 1. A user posts a channel message or thread reply.
 2. Slack evaluates the `message_posted` trigger.
-3. The trigger starts the workflow and passes event fields to the custom function.
+3. The trigger starts the workflow and passes channel ID, channel type, root/message timestamp, source event timestamp, text, and user ID to the custom function. It does not pass nullable `thread_ts`, avoiding a known nullable-input validation hazard and because posting needs only the root `message_ts`.
 4. The function rejects unsupported or bot/app-originated events.
 5. The parser extracts normalized, unique IDs.
 6. If none are present, the function returns success without writing state or posting.
@@ -202,7 +197,8 @@ The parser and formatter tests cover:
 - duplicates with differing case;
 - multiple unique IDs preserving first occurrence;
 - exact URL and one-line-per-ticket formatting;
-- top-level and existing-thread root selection.
+- top-level and existing-thread root selection using `message_ts` in both cases;
+- distinct idempotency keys for distinct source events in the same thread.
 
 ### Function tests with a mocked Slack client
 
