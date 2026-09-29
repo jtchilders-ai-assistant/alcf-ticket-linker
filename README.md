@@ -1,32 +1,46 @@
 # ALCF Ticket Linker
 
-A private Slack-hosted app that finds `REQ-<digits>` identifiers in Slack
-messages and replies with direct links to the ALCF support portal.
+A Slack-hosted app that finds `REQ-<digits>` identifiers in Slack messages and
+replies with direct links to the ALCF support portal.
+
+**Hosting:** This implementation runs on Slack's Run on Slack Infrastructure
+(ROSI). It does not require a CELS-hosted server, public HTTP endpoint, Socket
+Mode listener, external database, or continuously running Slack CLI process. The
+Slack CLI is used only to validate, deploy, create triggers, inspect, and roll
+back the app.
+
+> **CELS IT:** Start with [`docs/CELS_IT_HANDOFF.md`](docs/CELS_IT_HANDOFF.md).
+> It contains the review summary, prerequisites, exact Enterprise Grid
+> deployment procedure, acceptance checklist, and a known deployment issue.
+> Detailed operational steps are in [`docs/runbook.md`](docs/runbook.md).
 
 ---
 
 ## Behavior
 
 Whenever a user posts a message containing one or more ALCF support request
-identifiers — for example `REQ-13981` or `req-14002` (case-insensitive) — the
-app replies in the same thread with one link per unique ticket:
+identifiers—for example `REQ-13981` or `req-14002` (case-insensitive)—the app
+replies in the same thread with one link per unique ticket:
 
 ```
 REQ-13981: <https://support.alcf.anl.gov/helpdesk/tickets/13981>
 REQ-14002: <https://support.alcf.anl.gov/helpdesk/tickets/14002>
 ```
 
-Identifiers are matched by the pattern `REQ-` followed by one or more decimal
-digits, bounded by non-word characters. Embedded identifiers such as `XREQ-12`
-or `REQ-12A` are ignored.
+Identifiers are matched by `REQ-` followed by one or more decimal digits, with
+ASCII letter, digit, and underscore boundaries excluded. Embedded identifiers
+such as `XREQ-12`, `REQ-12A`, and `REQ-12_more` are ignored.
+
+The app handles new top-level posts and new replies in existing threads. It does
+not process historical messages, edits, or deletions.
 
 ---
 
 ## Channel scope
 
-The app monitors **public and private channels** only. Direct messages (IMs) and
-multi-party direct messages (MPDMs) are explicitly excluded. The required OAuth
-scopes are:
+The app monitors **public and private channels where it is a member**. Direct
+messages (IMs) and multi-party direct messages (MPDMs) are explicitly excluded.
+The required OAuth scopes are:
 
 | Scope              | Purpose                                      |
 | ------------------ | -------------------------------------------- |
@@ -40,9 +54,26 @@ No `im:history`, `mpim:history`, or `chat:write.public` scope is requested.
 
 ---
 
+## Architecture and hosting
+
+The repository contains a TypeScript workflow app built with the Deno Slack SDK:
+
+- two mutually exclusive `message_posted` event triggers;
+- one workflow and one custom function;
+- a Slack-hosted datastore for short-lived retry state; and
+- no configured outbound domains.
+
+Slack hosts the deployed function and datastore. A conventional app created in
+the Slack developer UI is not an equivalent deployment: implementing this with
+Events API or Socket Mode would require a separate persistent service. If an
+organization does not permit ROSI apps, that is a deployment-policy blocker—not
+a reason to install the conventional shell and expect this code to run.
+
+---
+
 ## Thread semantics under ROSI
 
-Slack's Runtime on Slack Infrastructure (ROSI) uses two separate trigger paths:
+Slack's Runtime on Slack Infrastructure uses two separate trigger paths:
 
 - **Top-level messages** (`thread_ts == null`): the trigger maps
   `data.message_ts` to both `source_message_ts` (dedup key) and `reply_root_ts`
@@ -51,8 +82,8 @@ Slack's Runtime on Slack Infrastructure (ROSI) uses two separate trigger paths:
 
 - **Thread replies** (`thread_ts != null`): the trigger maps `data.thread_ts` to
   `source_message_ts` and `data.message_ts` to `reply_root_ts`. The app's reply
-  is posted into the existing thread. Passing nullable `thread_ts` through
-  workflow input validation is avoided by using two distinct triggers.
+  is posted into the existing thread. Two distinct triggers avoid passing a
+  nullable `thread_ts` through workflow input validation.
 
 ---
 
@@ -61,16 +92,14 @@ Slack's Runtime on Slack Infrastructure (ROSI) uses two separate trigger paths:
 The app performs **best-effort, non-atomic** duplicate suppression:
 
 1. Before posting, it reads a `ProcessedMessages` datastore record keyed by
-   `channel_id:source_message_ts`. The `source_message_ts` carries sub-second
-   fractional precision, so two messages arriving in the same wall-clock second
-   have distinct keys.
+   `channel_id:source_message_ts`. The timestamp carries sub-second precision,
+   so two messages arriving in the same wall-clock second have distinct keys.
 2. If an unexpired record exists, the app exits without posting.
 3. After a successful post, it writes the record with a 24-hour TTL.
 
-Because `apps.datastore.put` has no conditional-create parameter, this is
-sequential retry suppression only, not exactly-once delivery. A redelivered
-event that arrives after step 3 will be suppressed; a redelivery that races with
-step 3 may result in a second reply.
+Because Slack's datastore write is not an atomic create-if-absent operation,
+this suppresses sequential retries but does not provide exactly-once delivery.
+Concurrent retries may still produce duplicate replies.
 
 ---
 
@@ -91,19 +120,21 @@ authenticated ticket pages.
 
 ---
 
-## Prerequisites
+## Tested toolchain
 
-- A **paid Slack plan** with [Slack Platform](https://api.slack.com/automation)
-  enabled.
-- **CELS administrator approval** to install a Slack app in the workspace.
-- [Deno](https://deno.com/) v2.9.7 or later.
-- [Slack CLI](https://api.slack.com/automation/cli/install) v4.x.
+- Deno `2.9.7`
+- Slack CLI `4.8.0`
+- Deno Slack SDK `2.15.1`
+- Deno Slack API `2.8.0`
+
+A paid Slack plan with Slack Platform enabled and CELS authorization to create,
+install, and deploy a ROSI app are required.
 
 ---
 
 ## Local verification
 
-Run the full local gate (format check, lint, tests, type check) with:
+Run the complete local gate with:
 
 ```bash
 export DENO_INSTALL="$HOME/.local/deno"
@@ -111,14 +142,17 @@ export PATH="$DENO_INSTALL/bin:$HOME/.slack/bin:$HOME/.local/bin:$PATH"
 deno task check
 ```
 
-All 24 tests should pass and every tool should exit 0.
+Expected result: formatting, lint, **24 tests**, and type checks all pass.
 
 ---
 
-## Further reading
+## Documentation
 
-- **Deployment and rollback:** [`docs/runbook.md`](docs/runbook.md)
-- **Design specification:**
+- **CELS IT deployment handoff:**
+  [`docs/CELS_IT_HANDOFF.md`](docs/CELS_IT_HANDOFF.md)
+- **Deployment, smoke testing, troubleshooting, and rollback:**
+  [`docs/runbook.md`](docs/runbook.md)
+- **Architecture and security rationale:**
   [`docs/superpowers/specs/2026-09-29-alcf-ticket-linker-design.md`](docs/superpowers/specs/2026-09-29-alcf-ticket-linker-design.md)
-- **Implementation plan:**
+- **Implementation record:**
   [`docs/superpowers/plans/2026-09-29-alcf-ticket-linker.md`](docs/superpowers/plans/2026-09-29-alcf-ticket-linker.md)
