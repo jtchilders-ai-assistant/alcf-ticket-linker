@@ -1,6 +1,6 @@
 # ALCF Ticket Linker — Design Specification
 
-**Status:** Approved design; implementation not started\
+**Status:** Implemented and locally verified; awaiting CELS deployment\
 **Date:** 2026-09-29\
 **Target workspace:** `cels-anl.slack.com`
 
@@ -40,7 +40,8 @@ ticket contents, or generate previews.
 - Best-effort retry deduplication using a short-lived Slack datastore record.
 - Unit tests, mocked-client integration tests, and a deployment/operations
   runbook.
-- A private GitHub repository owned by `jtchilders-ai-assistant`.
+- A public GitHub repository owned by `jtchilders-ai-assistant` so CELS IT can
+  review and deploy the source without repository-access provisioning.
 
 ### Out of scope
 
@@ -356,7 +357,7 @@ in the runbook.
 
 ## 9. Deployment and ownership
 
-The repository is private under `jtchilders-ai-assistant`. Deployment targets
+The repository is public under `jtchilders-ai-assistant`. Deployment targets
 `cels-anl.slack.com` through the Slack CLI. CELS administrators may need to
 approve the app, its scopes, ROSI deployment, and use of
 `all_resources: true`.[2][3] This approval is an external deployment blocker and
