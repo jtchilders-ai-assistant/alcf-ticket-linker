@@ -230,7 +230,6 @@ import {
   buildDeduplicationKey,
   buildReplyText,
   extractTicketIds,
-  replyRootTimestamp,
 } from "./tickets.ts";
 
 Deno.test("extractTicketIds normalizes and preserves unique first occurrence", () => {
@@ -269,11 +268,7 @@ Deno.test("buildReplyText emits one Slack link per line", () => {
   );
 });
 
-Deno.test("replyRootTimestamp uses ROSI message_ts for every message", () => {
-  assertEquals(replyRootTimestamp("100.200"), "100.200");
-});
-
-Deno.test("buildDeduplicationKey distinguishes replies in one thread", () => {
+Deno.test("buildDeduplicationKey distinguishes replies in one thread by sub-second message_ts", () => {
   assertEquals(
     buildDeduplicationKey("C123", "1700000000.000001"),
     "C123:1700000000.000001",
@@ -323,15 +318,11 @@ export function buildReplyText(ticketIds: readonly string[]): string {
   }).join("\n");
 }
 
-export function replyRootTimestamp(messageTs: string): string {
-  return messageTs;
-}
-
 export function buildDeduplicationKey(
   channelId: string,
-  sourceEventTimestamp: string,
+  sourceMessageTs: string,
 ): string {
-  return `${channelId}:${sourceEventTimestamp}`;
+  return `${channelId}:${sourceMessageTs}`;
 }
 ```
 
@@ -473,8 +464,8 @@ function inputs(overrides: Record<string, string> = {}) {
   return {
     channel_id: "C123",
     channel_type: "public",
-    message_ts: "1700000000.000001",
-    source_event_timestamp: "1700000001.000001",
+    source_message_ts: "1700000000.000001",
+    reply_root_ts: "1700000000.000001",
     text: "See REQ-13981",
     user_id: "U123",
     ...overrides,
@@ -712,7 +703,8 @@ git commit -m "feat: link tickets from Slack messages"
 
 - Create first: `tests/configuration_test.ts`
 - Create after RED: `workflows/link_tickets.ts`
-- Create after RED: `triggers/message_posted.ts`
+- Create after RED: `triggers/message_posted_top_level.ts`
+- Create after RED: `triggers/message_posted_thread_reply.ts`
 - Create after RED: `manifest.ts`
 
 - [ ] **Step 1: Write failing configuration tests**
@@ -930,7 +922,7 @@ Run:
 
 ```bash
 deno test tests/configuration_test.ts
-deno check manifest.ts workflows/link_tickets.ts triggers/message_posted.ts
+deno check manifest.ts workflows/link_tickets.ts triggers/message_posted_top_level.ts triggers/message_posted_thread_reply.ts
 slack manifest validate
 ```
 
