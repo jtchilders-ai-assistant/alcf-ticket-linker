@@ -85,7 +85,9 @@ The `ProcessedMessages` datastore stores **only**:
 | `expires_at` | timestamp  | Unix seconds when the record expires (24 h)                       |
 | `reply_ts`   | message_ts | Slack timestamp of the reply posted by the app                    |
 
-No message text, user identity, or ticket identifiers are persisted.
+No message text, user identity, or ticket identifiers are persisted. The app
+constructs ticket URLs directly; it does not call the Freshworks API or fetch
+authenticated ticket pages.
 
 ---
 

@@ -111,7 +111,13 @@ Expected: Slack returns a deployed app identifier (e.g. `A0123456789`). Record
 it in your local operator notes file (`ops-notes.txt` or similar, listed in
 `.gitignore`).
 
-After deployment, read back the scopes to confirm:
+After deployment, read back the deployed manifest:
+
+```bash
+slack manifest info --app "$APP_ID" --source remote
+```
+
+Confirm that the bot scope list contains exactly:
 
 ```
 channels:history
