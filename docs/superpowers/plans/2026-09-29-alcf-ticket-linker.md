@@ -439,7 +439,7 @@ import { SlackFunctionTester } from "deno-slack-sdk/mod.ts";
 
 const { createContext } = SlackFunctionTester("link_tickets");
 
-type RecordedRequest = { method: string; body: FormData };
+type RecordedRequest = { method: string; params: URLSearchParams };
 
 function slackFetchStub(
   responses: Record<string, Array<Record<string, unknown>>>,
@@ -451,8 +451,9 @@ function slackFetchStub(
     async (url: string | URL | Request, options?: RequestInit) => {
       const request = url instanceof Request ? url : new Request(url, options);
       const method = request.url.split("/").at(-1)!;
-      const body = await request.formData();
-      recorded.push({ method, body });
+      const bodyText = await request.clone().text();
+      const params = new URLSearchParams(bodyText);
+      recorded.push({ method, params });
       const response = responses[method]?.shift();
       if (!response) throw new Error(`Unexpected Slack method: ${method}`);
       return new Response(JSON.stringify(response), { status: 200 });
@@ -520,7 +521,7 @@ Append tests that queue these API responses:
 Assert the method order is `apps.datastore.get`, `chat.postMessage`,
 `apps.datastore.put`; decode `text`, `channel`, and `thread_ts` from the
 recorded form body; verify one reply contains all unique links; and verify the
-datastore key is `C123:1700000001.000001`.
+datastore key is `C123:1700000000.000001`.
 
 Add a second test with:
 
@@ -529,7 +530,7 @@ Add a second test with:
   "apps.datastore.get": [{
     ok: true,
     item: {
-      source_key: "C123:1700000001.000001",
+      source_key: "C123:1700000000.000001",
       expires_at: 4102444800,
       reply_ts: "1700000002.1",
     },
